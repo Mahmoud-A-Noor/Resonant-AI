@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import RecordRTC from 'recordrtc';
 import axios from 'axios';
 import { getOrCreateChatId } from "@/services/session";
-import VoiceButton from "@/components/chat/VoiceButton";
+import VoiceButton from "@components/chat/VoiceButton";
 
 const VoiceChat = () => {
   const chatId = getOrCreateChatId();
@@ -56,21 +56,43 @@ const VoiceChat = () => {
         timeSlice: 500,
         recorderType: RecordRTC.StereoAudioRecorder,
         bitsPerSecond: 256000,
-        audioBitsPerSecond: 256000,
-        ondataavailable: async (blob) => {
-          if (await isSilent(blob)) {
-            consecutiveSilenceCountRef.current += 1;
-            console.log(`Silence detected (${consecutiveSilenceCountRef.current}/5)`);
-
-            if (consecutiveSilenceCountRef.current >= 5) {
-              console.log('Extended silence detected - stopping recording');
-              stopRecording();
-            }
-          } else {
-            consecutiveSilenceCountRef.current = 0;
-          }
-        }
+        audioBitsPerSecond: 256000
       });
+
+      // Create a separate analyser node for silence detection
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 2048;
+      analyser.smoothingTimeConstant = 0.8;
+      
+      // Connect the analyser to the audio graph
+      suppressor.connect(analyser);
+      analyser.connect(destination);
+
+      // Start silence detection
+      const silenceCheckInterval = setInterval(() => {
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+        analyser.getByteFrequencyData(dataArray);
+        
+        // Calculate average volume
+        let sum = 0;
+        for (let i = 0; i < dataArray.length; i++) {
+          sum += dataArray[i];
+        }
+        const averageVolume = sum / dataArray.length;
+
+        if (averageVolume < 10) { // Adjust this threshold as needed
+          consecutiveSilenceCountRef.current += 1;
+          console.log(`Silence detected (${consecutiveSilenceCountRef.current}/3)`);
+
+          if (consecutiveSilenceCountRef.current >= 3) {
+            console.log('Extended silence detected - stopping recording');
+            stopRecording();
+            clearInterval(silenceCheckInterval);
+          }
+        } else {
+          consecutiveSilenceCountRef.current = 0;
+        }
+      }, 500); // Check every 500ms
 
       // Start recording and set state
       recorderRef.current.startRecording();
@@ -82,30 +104,6 @@ const VoiceChat = () => {
     } catch (err) {
       console.error('Recording failed:', err);
       setIsListening(false);
-    }
-  };
-
-  const isSilent = async (blob: Blob) => {
-    try {
-      if (blob.size < 1024) return false;
-
-      const arrayBuffer = await blob.arrayBuffer();
-      const audioContext = new OfflineAudioContext(1, 44100, 44100);
-      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-
-      const channelData = audioBuffer.getChannelData(0);
-      let sum = 0;
-
-      for (let i = 0; i < channelData.length; i += 100) {
-        sum += Math.abs(channelData[i]);
-      }
-
-      const avgVolume = sum / Math.ceil(channelData.length / 100);
-
-      return avgVolume < 0.03;
-    } catch (err) {
-      console.error('Silence check error:', err);
-      return false;
     }
   };
 

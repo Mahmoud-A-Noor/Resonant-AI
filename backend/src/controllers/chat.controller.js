@@ -34,25 +34,19 @@ const processChatAudio = async (req, res) => {
     // Step 3: Convert AI response to speech using ElevenLabs
     const audioBuffer = await services.textToSpeech(text);
 
+    // Clean up temporary files before sending response
+    try {
+      fs.unlinkSync(tempFilePath);
+    } catch (err) {
+      console.error('Error cleaning up temporary file:', err);
+    }
+
     // Set headers for blob response
     res.setHeader('Content-Type', 'audio/wav');
     res.setHeader('Content-Disposition', 'attachment; filename=response.wav');
 
     // Send the audio buffer directly
     res.send(audioBuffer);
-
-    // Handle cleanup when response is finished
-    res.on('finish', () => {
-      // Clean up temporary files
-      fs.unlinkSync(tempFilePath);
-    });
-
-    // Handle errors
-    res.on('error', (err) => {
-      console.error('Error sending audio:', err);
-      // Clean up temporary files
-      fs.unlinkSync(tempFilePath);
-    });
 
   } catch (error) {
     console.error('Chat processing error:', error);

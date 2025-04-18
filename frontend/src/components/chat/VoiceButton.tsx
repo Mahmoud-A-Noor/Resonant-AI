@@ -1,47 +1,50 @@
 
-import { Mic, MicOff, Loader } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import React from 'react';
+import { Mic, MicOff, Loader } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 
 interface VoiceButtonProps {
   isListening: boolean;
   isAiSpeaking: boolean;
-  isProcessing?: boolean;
-  toggleListening: () => void;
+  isProcessing: boolean;
+  onClick: () => void;
+  disabled?: boolean;
 }
 
-const VoiceButton = ({ 
-  isListening, 
-  isAiSpeaking, 
-  isProcessing = false, 
-  toggleListening 
-}: VoiceButtonProps) => {
+const VoiceButton: React.FC<VoiceButtonProps> = ({
+  isListening,
+  isAiSpeaking,
+  isProcessing,
+  onClick,
+  disabled
+}) => {
   return (
     <div className="relative">
-      {/* AI Speaking Animation - Circular waves with blue color */}
+      {/* AI Speaking Animation */}
       {isAiSpeaking && (
         <>
-          <div className="absolute inset-0 rounded-full animate-ping" style={{ 
+          <div className="absolute inset-0 rounded-full animate-ping" style={{
             background: "radial-gradient(circle, rgba(99,102,241,0.7) 0%, rgba(99,102,241,0) 70%)",
             animation: "ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite",
             animationDelay: "0s"
           }}></div>
-          <div className="absolute inset-0 rounded-full" style={{ 
+          <div className="absolute inset-0 rounded-full" style={{
             background: "radial-gradient(circle, rgba(79,70,229,0.5) 0%, rgba(79,70,229,0) 70%)",
             animation: "ping 1.8s cubic-bezier(0, 0, 0.2, 1) infinite",
             animationDelay: "0.3s"
           }}></div>
-          <div className="absolute inset-0 rounded-full" style={{ 
+          <div className="absolute inset-0 rounded-full" style={{
             background: "radial-gradient(circle, rgba(67,56,202,0.3) 0%, rgba(67,56,202,0) 70%)",
             animation: "ping 2.1s cubic-bezier(0, 0, 0.2, 1) infinite",
             animationDelay: "0.6s"
           }}></div>
         </>
       )}
-      
-      {/* User Speaking Animation - Sound waves with purple color */}
+
+      {/* User Speaking Animation */}
       {isListening && (
         <>
-          <div className="absolute inset-0 rounded-full animate-pulse" style={{ 
+          <div className="absolute inset-0 rounded-full animate-pulse" style={{
             boxShadow: "0 0 0 20px rgba(139,92,246,0.1), 0 0 0 40px rgba(139,92,246,0.05)"
           }}></div>
           <div className="absolute -inset-4 flex items-center justify-center">
@@ -67,11 +70,11 @@ const VoiceButton = ({
           </div>
         </>
       )}
-      
-      {/* Processing Animation - Rotating dashed circle with orange/yellow gradient */}
-      {isProcessing && !isListening && !isAiSpeaking && (
+
+      {/* Processing Animation */}
+      {isProcessing && (
         <>
-          <div className="absolute inset-0 rounded-full" style={{ 
+          <div className="absolute inset-0 rounded-full" style={{
             background: "radial-gradient(circle, rgba(251,191,36,0.2) 0%, rgba(251,191,36,0) 70%)"
           }}></div>
           <div className="absolute -inset-2 flex items-center justify-center">
@@ -95,27 +98,25 @@ const VoiceButton = ({
           </div>
         </>
       )}
-      
+
       {/* Main button */}
       <Button
-        onClick={toggleListening}
-        disabled={isAiSpeaking || isProcessing}
-        className={`h-24 w-24 rounded-full shadow-lg transition-all duration-300 ${
+        onClick={onClick}
+        disabled={disabled}
+        className={`size-52 rounded-full shadow-lg transition-all duration-300 cursor-pointer ${
           isListening
             ? "bg-gradient-to-r from-purple-600 to-fuchsia-500 shadow-purple-300/40"
             : isAiSpeaking
             ? "bg-gradient-to-r from-indigo-500 to-blue-500 shadow-indigo-300/40"
-            : isProcessing
-            ? "bg-gradient-to-r from-amber-500 to-orange-500 shadow-amber-300/40"
             : "bg-gradient-to-r from-blue-600 to-violet-600 hover:from-blue-700 hover:to-violet-700"
         }`}
       >
         {isListening ? (
-          <MicOff className="h-10 w-10" />
+          <MicOff style={{ width: 36, height: 36 }} />
         ) : isProcessing ? (
-          <Loader className="h-10 w-10 animate-spin" />
+          <Loader style={{ width: 36, height: 36 }} />
         ) : (
-          <Mic className="h-10 w-10" />
+          <Mic style={{ width: 36, height: 36 }} />
         )}
       </Button>
     </div>
