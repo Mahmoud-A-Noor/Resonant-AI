@@ -1,0 +1,96 @@
+# Backend
+backend/node_modules/
+backend/.env
+backend/uploads/
+backend/temp/
+backend/.npm/
+backend/.cache/
+backend/.next/
+backend/.yarn/
+backend/.pnp
+backend/.pnp.js
+backend/dist/
+backend/build/
+
+# Frontend
+frontend/node_modules/
+frontend/.env
+frontend/.cache/
+frontend/.next/
+frontend/.yarn/
+frontend/.pnp
+frontend/.pnp.js
+frontend/dist/
+frontend/build/
+frontend/.bun/
+frontend/.bun-cache/
+frontend/.bun-install/
+frontend/bun.lockb
+frontend/.vite/
+frontend/.nuxt/
+frontend/.cache/
+frontend/.output/
+
+# IDE and Editor Files
+.idea/
+.vscode/
+*.swp
+*.swo
+*.swn
+.DS_Store
+Thumbs.db
+
+# OS and Package Manager Files
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment Variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Coverage
+coverage/
+
+# TypeScript
+*.tsbuildinfo
+
+# Testing
+coverage/
+
+# Build
+*.tsbuildinfo
+
+# Misc
+.DS_Store
+*.pem
+
+# Debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Local env files
+.env*.local
+
+# Vite
+node_modules/.vite/
+
+# Bun
+.bun/
+.bun-cache/
+.bun-install/
+.bun.lockb
+
+# Nuxt
+.nuxt/
