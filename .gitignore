@@ -11,6 +11,8 @@ backend/.pnp
 backend/.pnp.js
 backend/dist/
 backend/build/
+backend/src/temp/
+backend/uploads/
 
 # Frontend
 frontend/node_modules/
