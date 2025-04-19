@@ -10,8 +10,10 @@ const VoiceChat = () => {
   const [isAiSpeaking, setIsAiSpeaking] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [transcript, setTranscript] = useState('');
+  const transcriptRef = useRef('');
   const [aiText, setAiText] = useState('');
   const recognitionRef = useRef<any>(null);
+  const silenceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const startListening = () => {
     const SpeechRecognition =
@@ -21,11 +23,25 @@ const VoiceChat = () => {
       return;
     }
     const recognition = new SpeechRecognition();
-    recognition.continuous = false;
+    recognition.continuous = true;
     recognition.interimResults = true;
     recognition.lang = 'en-US';
     recognitionRef.current = recognition;
     setTranscript('');
+
+    // Helper to stop recognition after silence
+    const stopAfterSilence = () => {
+      if (recognitionRef.current) recognitionRef.current.stop();
+      setIsListening(false);
+      sendTextToBackend(transcriptRef.current);
+    };
+
+    const resetSilenceTimer = () => {
+      if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
+      silenceTimeoutRef.current = setTimeout(() => {
+        stopAfterSilence();
+      }, 2000); // 2 seconds
+    };
 
     recognition.onresult = (event: any) => {
       let interim = '';
@@ -38,23 +54,31 @@ const VoiceChat = () => {
           interim += transcriptPiece;
         }
       }
-      setTranscript(final || interim);
-      if (final) {
-        recognition.stop();
-        setIsListening(false);
-        sendTextToBackend(final);
-      }
+      // Always use the latest transcript (not append)
+      const latest = final || interim;
+      setTranscript(latest);
+      transcriptRef.current = latest;
+      // Reset silence timer on every result
+      resetSilenceTimer();
     };
     recognition.onerror = (event: any) => {
       setIsListening(false);
       setTranscript('');
+      if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
       console.error('Speech recognition error:', event.error);
     };
     recognition.onend = () => {
-      setIsListening(false);
+      // If still listening, restart recognition (workaround for Chrome's auto-end)
+      if (isListening) {
+        recognition.start();
+      } else {
+        if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
+      }
     };
     recognition.start();
     setIsListening(true);
+    // Start initial silence timer in case no speech is detected at all
+    resetSilenceTimer();
   };
 
   const stopListening = () => {
@@ -62,6 +86,7 @@ const VoiceChat = () => {
       recognitionRef.current.stop();
       setIsListening(false);
     }
+    if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
   };
 
   const sendTextToBackend = async (text: string) => {
@@ -85,6 +110,16 @@ const VoiceChat = () => {
       setIsAiSpeaking(false);
       setAiText('');
       console.error('Error processing chat:', error);
+    }
+  };
+
+  // Helper to stop and send transcript immediately (e.g., on user click)
+  const stopAndSend = () => {
+    if (isListening) {
+      if (recognitionRef.current) recognitionRef.current.stop();
+      setIsListening(false);
+      if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
+      sendTextToBackend(transcriptRef.current);
     }
   };
 
@@ -164,7 +199,13 @@ const VoiceChat = () => {
   );
 
   return (
-    <div className="h-full w-full flex flex-col bg-gradient-to-br from-blue-50 to-purple-50 items-center justify-center">
+    <div
+      className="h-full w-full flex flex-col bg-gradient-to-br from-blue-50 to-purple-50 items-center justify-center"
+      onClick={stopAndSend}
+      style={{
+        cursor: isListening ? "pointer" : "default"
+      }}
+    >
       <div className="p-6 flex items-center justify-center">
         {renderVoiceButton()}
       </div>
