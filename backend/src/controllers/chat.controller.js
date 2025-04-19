@@ -1,59 +1,35 @@
 const services = require('../services');
-const path = require('path');
-const fs = require('fs');
-const { v4: uuidv4 } = require('uuid');
 
-const processChatAudio = async (req, res) => {
+const processChat = async (req, res) => {
   try {
     const chatId = req.params.chatId;
-    
     if (!chatId) {
       return res.status(400).json({ error: 'Chat ID is required' });
     }
-
-    if (!req.file) {
-      return res.status(400).json({ error: 'Audio file is required' });
+    const { text } = req.body;
+    if (!text) {
+      return res.status(400).json({ error: 'Text input is required' });
     }
-
-    // Create temp directory if it doesn't exist
-    const tempDir = path.join(__dirname, '../temp');
-    if (!fs.existsSync(tempDir)) {
-      fs.mkdirSync(tempDir, { recursive: true });
-    }
-
-    // Save uploaded audio temporarily
-    const tempFilePath = path.join(tempDir, `audio_${uuidv4()}.webm`);
-    fs.writeFileSync(tempFilePath, req.file.buffer);
-
-    // Step 1: Convert audio to text using Speechmatics
-    const transcription = await services.speechToText(tempFilePath);
-
-    // Step 2: Generate response using Gemini
-    const text = await services.generateResponse(transcription, chatId);
-    
-    // Step 3: Convert AI response to speech using ElevenLabs
-    const audioBuffer = await services.textToSpeech(text);
-
-    // Clean up temporary files before sending response
-    try {
-      fs.unlinkSync(tempFilePath);
-    } catch (err) {
-      console.error('Error cleaning up temporary file:', err);
-    }
-
-    // Set headers for blob response
-    res.setHeader('Content-Type', 'audio/wav');
-    res.setHeader('Content-Disposition', 'attachment; filename=response.wav');
-
-    // Send the audio buffer directly
-    res.send(audioBuffer);
-
+    // Step 1: Use the provided text directly
+    const responseText = await services.generateResponse(text, chatId);
+    // Step 2: Convert AI response to speech using ElevenLabs (or your TTS)
+    const audioBuffer = await services.textToSpeech(responseText);
+    // Convert audio buffer to base64
+    const audioBase64 = Buffer.isBuffer(audioBuffer)
+      ? audioBuffer.toString('base64')
+      : Buffer.from(audioBuffer).toString('base64');
+    // Send response with both text and audio (audio as base64)
+    res.json({
+      text: responseText,
+      audio: audioBase64,
+      audioType: 'audio/wav'
+    });
   } catch (error) {
     console.error('Chat processing error:', error);
-    res.status(500).json({ error: 'Failed to process audio' });
+    res.status(500).json({ error: 'Failed to process chat' });
   }
 };
 
 module.exports = {
-  processChatAudio
+  processChat
 };
