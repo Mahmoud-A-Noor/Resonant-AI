@@ -2,6 +2,7 @@ import { useState, useRef } from "react";
 import { Mic, MicOff, Loader } from "lucide-react";
 import axios from 'axios';
 import { getOrCreateChatId } from "@/services/session";
+import TTS from 'text-to-speech-offline'
 
 const VoiceChat = () => {
   const chatId = getOrCreateChatId();
@@ -69,70 +70,21 @@ const VoiceChat = () => {
       setAiText('');
       const response = await axios.post(
         `${import.meta.env.VITE_API_BASE_URL}/chat/${chatId}`,
-        { text, chatId },
-        { responseType: 'json' } // default, get text and audio url/base64
+        { text, chatId }
       );
       setIsProcessing(false);
       setAiText(response.data.text || '');
       setIsAiSpeaking(true);
-      // Try to play audio as a blob if backend supports it
-      if (response.data.audio) {
-        // If backend returns a string (base64 or data url)
-        let audioUrl = response.data.audio;
-        if (typeof audioUrl === 'string') {
-          if (audioUrl.startsWith('data:')) {
-            // already a data URL
-            const audio = new Audio(audioUrl);
-            audio.controls = true;
-            audio.preload = 'none';
-            audio.onended = () => {
-              setIsAiSpeaking(false);
-              audio.remove();
-            };
-            document.body.appendChild(audio);
-            audio.play();
-          } else if (audioUrl.length > 100) {
-            // fallback: treat as base64
-            const dataUrl = `data:audio/wav;base64,${audioUrl}`;
-            const audio = new Audio(dataUrl);
-            audio.controls = true;
-            audio.preload = 'none';
-            audio.onended = () => {
-              setIsAiSpeaking(false);
-              audio.remove();
-            };
-            document.body.appendChild(audio);
-            audio.play();
-          } else {
-            setIsAiSpeaking(false);
-          }
-        } else {
-          setIsAiSpeaking(false);
-        }
-      } else {
-        setIsAiSpeaking(false);
+      // Use the TTS library to speak the AI's text
+      if (response.data.text) {
+        TTS(response.data.text, 'en-US');
       }
+      setIsAiSpeaking(false);
     } catch (error) {
-      // Try to get audio as blob (if backend is sending binary)
-      if (axios.isAxiosError(error) && error.response && error.response.data instanceof Blob) {
-        const blob = error.response.data;
-        const url = URL.createObjectURL(blob);
-        const audio = new Audio(url);
-        audio.controls = true;
-        audio.preload = 'none';
-        audio.onended = () => {
-          setIsAiSpeaking(false);
-          audio.remove();
-          URL.revokeObjectURL(url);
-        };
-        document.body.appendChild(audio);
-        audio.play();
-      } else {
-        setIsProcessing(false);
-        setIsAiSpeaking(false);
-        setAiText('');
-        console.error('Error processing chat:', error);
-      }
+      setIsProcessing(false);
+      setIsAiSpeaking(false);
+      setAiText('');
+      console.error('Error processing chat:', error);
     }
   };
 
