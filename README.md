@@ -1,5 +1,8 @@
 # Resonant - Intelligent Document Voice Assistant
 
+![image](https://github.com/user-attachments/assets/59846c22-80ba-4ff0-862a-00df7dab13e0)
+
+
 ## 📖 Table of Contents
 - [Features](#-key-features)
 - [Tech Stack](#-tech-stack)
