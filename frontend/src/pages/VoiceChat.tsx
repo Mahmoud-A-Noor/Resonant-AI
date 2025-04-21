@@ -1,304 +1,229 @@
 import { useState, useRef } from "react";
 import { Mic, MicOff, Loader } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import RecordRTC from 'recordrtc';
 import axios from 'axios';
 import { getOrCreateChatId } from "@/services/session";
-
+import TTS from 'text-to-speech-offline'
 
 const VoiceChat = () => {
   const chatId = getOrCreateChatId();
   const [isListening, setIsListening] = useState(false);
   const [isAiSpeaking, setIsAiSpeaking] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
-  const recorderRef = useRef<RecordRTC | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const consecutiveSilenceCountRef = useRef<number>(0);
-  const startRecording = async () => {
-    try {
-      // Get audio stream with proper constraints
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          noiseSuppression: true,
-          echoCancellation: true,
-          autoGainControl: true,
-          channelCount: 1, // Mono recording
-          sampleRate: 48000,
-          sampleSize: 16
-        }
-      });
+  const [transcript, setTranscript] = useState('');
+  const transcriptRef = useRef('');
+  const [aiText, setAiText] = useState('');
+  const recognitionRef = useRef<any>(null);
+  const silenceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-      // Create Web Audio API context
-      const audioContext = new AudioContext({
-        sampleRate: 48000
-      });
+  const startListening = () => {
+    const SpeechRecognition =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert('Your browser does not support Speech Recognition.');
+      return;
+    }
+    const recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+    recognitionRef.current = recognition;
+    setTranscript('');
 
-      // Load noise suppressor worklet
-      await audioContext.audioWorklet.addModule('/noise-suppressor.js');
+    // Helper to stop recognition after silence
+    const stopAfterSilence = () => {
+      if (recognitionRef.current) recognitionRef.current.stop();
+      setIsListening(false);
+      sendTextToBackend(transcriptRef.current);
+    };
 
-      // Set up audio graph
-      const source = audioContext.createMediaStreamSource(stream);
-      const suppressor = new AudioWorkletNode(audioContext, 'noise-suppressor');
-      const destination = audioContext.createMediaStreamDestination();
+    const resetSilenceTimer = () => {
+      if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
+      silenceTimeoutRef.current = setTimeout(() => {
+        stopAfterSilence();
+      }, 2000); // 2 seconds
+    };
 
-      source.connect(suppressor);
-      suppressor.connect(destination);
-
-      // Initialize recorder with proper settings
-      recorderRef.current = new RecordRTC(destination.stream, {
-        type: 'audio',
-        mimeType: 'audio/webm',
-        sampleRate: 44100,
-        desiredSampRate: 44100,
-        bufferSize: 8192,
-        disableLogs: true,
-        numberOfAudioChannels: 1,
-        timeSlice: 500,
-        recorderType: RecordRTC.StereoAudioRecorder,
-        bitsPerSecond: 256000,
-        audioBitsPerSecond: 256000
-      });
-
-      // Create a separate analyser node for silence detection
-      const analyser = audioContext.createAnalyser();
-      analyser.fftSize = 2048;
-      analyser.smoothingTimeConstant = 0.8;
-      
-      // Connect the analyser to the audio graph
-      suppressor.connect(analyser);
-      analyser.connect(destination);
-
-      // Start silence detection
-      const silenceCheckInterval = setInterval(() => {
-        const dataArray = new Uint8Array(analyser.frequencyBinCount);
-        analyser.getByteFrequencyData(dataArray);
-        
-        // Calculate average volume
-        let sum = 0;
-        for (let i = 0; i < dataArray.length; i++) {
-          sum += dataArray[i];
-        }
-        const averageVolume = sum / dataArray.length;
-
-        if (averageVolume < 10) { // Adjust this threshold as needed
-          consecutiveSilenceCountRef.current += 1;
-          console.log(`Silence detected (${consecutiveSilenceCountRef.current}/3)`);
-
-          if (consecutiveSilenceCountRef.current >= 3) {
-            console.log('Extended silence detected - stopping recording');
-            stopRecording();
-            clearInterval(silenceCheckInterval);
-          }
+    recognition.onresult = (event: any) => {
+      let interim = '';
+      let final = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const transcriptPiece = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          final += transcriptPiece;
         } else {
-          consecutiveSilenceCountRef.current = 0;
+          interim += transcriptPiece;
         }
-      }, 500); // Check every 500ms
+      }
+      // Always use the latest transcript (not append)
+      const latest = final || interim;
+      setTranscript(latest);
+      transcriptRef.current = latest;
+      // Reset silence timer on every result
+      resetSilenceTimer();
+    };
+    recognition.onerror = (event: any) => {
+      setIsListening(false);
+      setTranscript('');
+      if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
+      console.error('Speech recognition error:', event.error);
+    };
+    recognition.onend = () => {
+      // If still listening, restart recognition (workaround for Chrome's auto-end)
+      if (isListening) {
+        recognition.start();
+      } else {
+        if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
+      }
+    };
+    recognition.start();
+    setIsListening(true);
+    // Start initial silence timer in case no speech is detected at all
+    resetSilenceTimer();
+  };
 
-      // Start recording and set state
-      recorderRef.current.startRecording();
-      setIsListening(true);
-      streamRef.current = stream;
-
-      await audioContext.audioWorklet.addModule('/noise-suppressor.js');
-
-    } catch (err) {
-      console.error('Recording failed:', err);
+  const stopListening = () => {
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
       setIsListening(false);
     }
+    if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
   };
 
-  const stopRecording = async () => {
-    consecutiveSilenceCountRef.current = 0;
-
-    cleanup();
-    setIsProcessing(true);
-    if (recorderRef.current && recorderRef.current.state !== 'stopped') {
-      setIsProcessing(true);
-      recorderRef.current.stopRecording(async () => {
-        const blob = recorderRef.current?.getBlob();
-        if (blob) {
-          await sendAudioToBackend(blob, chatId);
-        }
-      });
-    }
-  };
-
-  const sendAudioToBackend = async (audioBlob: Blob, chatId: string) => {
+  const sendTextToBackend = async (text: string) => {
     try {
-      const formData = new FormData();
-      formData.append('audio', audioBlob, 'recording.webm');
-
-      try {
-        // Create audio element first
-        const aiAudio = new Audio();
-        aiAudio.controls = true;
-        aiAudio.preload = 'none'; // Don't preload the entire file
-        aiAudio.onended = () => {
-          setIsAiSpeaking(false);
-          aiAudio.remove();
-        };
-        document.body.appendChild(aiAudio);
-
-        // Send request and set audio source
-        const response = await axios.post(`${import.meta.env.VITE_API_BASE_URL}/chat/${chatId}`, formData, {
-          responseType: 'blob',
-          headers: {
-            'Content-Type': 'multipart/form-data',
-          },
-        });
-
-        setIsProcessing(false);
-        setIsAiSpeaking(true);
-
-        // Create blob URL from response
-        const audioBlob = new Blob([response.data], { type: 'audio/wav' });
-        const audioUrl = URL.createObjectURL(audioBlob);
-        aiAudio.src = audioUrl;
-        aiAudio.play();
-
-        // Clean up blob URL when done
-        aiAudio.addEventListener('ended', () => {
-          URL.revokeObjectURL(audioUrl);
-        });
-
-      } catch (err) {
-        console.error('Failed to process audio:', err);
-        setIsProcessing(false);
-        setIsAiSpeaking(false);
-        setIsProcessing(false);
+      setIsProcessing(true);
+      setAiText('');
+      const response = await axios.post(
+        `${import.meta.env.VITE_API_BASE_URL}/chat/${chatId}`,
+        { text, chatId }
+      );
+      setIsProcessing(false);
+      setAiText(response.data.text || '');
+      setIsAiSpeaking(true);
+      // Use the TTS library to speak the AI's text
+      if (response.data.text) {
+        TTS(response.data.text, 'en-US');
       }
-    } catch (err) {
-      console.error('Recording failed:', err);
+      setIsAiSpeaking(false);
+    } catch (error) {
       setIsProcessing(false);
       setIsAiSpeaking(false);
-      setIsProcessing(false);
+      setAiText('');
+      console.error('Error processing chat:', error);
     }
   };
 
-  const cleanup = () => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
-    }
-    setIsListening(false);
-
-  };
-
-  const toggleListening = () => {
+  // Helper to stop and send transcript immediately (e.g., on user click)
+  const stopAndSend = () => {
     if (isListening) {
-      stopRecording();
-    } else {
-      startRecording();
+      if (recognitionRef.current) recognitionRef.current.stop();
+      setIsListening(false);
+      if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
+      sendTextToBackend(transcriptRef.current);
     }
   };
+
+  // Custom animated button (old design)
+  const renderVoiceButton = () => (
+    <div className="relative flex items-center justify-center">
+      {/* AI Speaking Animation - Circular waves with blue color */}
+      {isAiSpeaking && (
+        <>
+          <div className="absolute inset-0 rounded-full animate-ping" style={{
+            background: "radial-gradient(circle, rgba(99,102,241,0.7) 0%, rgba(99,102,241,0) 70%)",
+            animation: "ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite",
+            animationDelay: "0s"
+          }}></div>
+          <div className="absolute inset-0 rounded-full" style={{
+            background: "radial-gradient(circle, rgba(79,70,229,0.5) 0%, rgba(79,70,229,0) 70%)",
+            animation: "ping 1.8s cubic-bezier(0, 0, 0.2, 1) infinite",
+            animationDelay: "0.3s"
+          }}></div>
+          <div className="absolute inset-0 rounded-full" style={{
+            background: "radial-gradient(circle, rgba(67,56,202,0.3) 0%, rgba(67,56,202,0) 70%)",
+            animation: "ping 2.1s cubic-bezier(0, 0, 0.2, 1) infinite",
+            animationDelay: "0.6s"
+          }}></div>
+        </>
+      )}
+      {/* User Speaking Animation - Sound waves with purple color */}
+      {isListening && (
+        <>
+          <div className="absolute inset-0 rounded-full animate-pulse" style={{
+            boxShadow: "0 0 0 20px rgba(139,92,246,0.1), 0 0 0 40px rgba(139,92,246,0.05)"
+          }}></div>
+          <div className="absolute -inset-4 flex items-center justify-center">
+            <svg viewBox="0 0 100 100" className="w-full h-full absolute">
+              {[...Array(4)].map((_, i) => (
+                <circle
+                  key={i}
+                  cx="50"
+                  cy="50"
+                  r={20 + i * 10}
+                  strokeWidth="2"
+                  stroke={`rgba(147,51,234,${0.7 - i * 0.15})`}
+                  fill="none"
+                  strokeDasharray="1, 8"
+                  style={{
+                    animation: `spin ${2 + i * 0.5}s linear infinite`,
+                    transformOrigin: 'center',
+                    animationDirection: i % 2 === 0 ? 'normal' : 'reverse'
+                  }}
+                />
+              ))}
+            </svg>
+          </div>
+        </>
+      )}
+      {/* Main button */}
+      <button
+        onClick={isListening ? stopListening : startListening}
+        disabled={isAiSpeaking || isProcessing}
+        className={`size-52 rounded-full shadow-lg transition-all duration-300 cursor-pointer focus:outline-none flex items-center justify-center ${isListening
+          ? "bg-gradient-to-r from-purple-600 to-fuchsia-500 shadow-purple-300/40"
+          : isAiSpeaking
+            ? "bg-gradient-to-r from-indigo-500 to-blue-500 shadow-indigo-300/40"
+            : "bg-gradient-to-r from-blue-600 to-violet-600 hover:from-blue-700 hover:to-violet-700"
+          }`}
+        type="button"
+      >
+        {isListening ? (
+          <MicOff style={{ width: 36, height: 36, color: '#fff' }} />
+        ) : isProcessing ? (
+          <Loader style={{ width: 36, height: 36, color: '#fff' }} />
+        ) : (
+          <Mic style={{ width: 36, height: 36, color: '#fff' }} />
+        )}
+      </button>
+    </div>
+  );
 
   return (
-    <div className="h-full w-full flex flex-col bg-gradient-to-br from-blue-50 to-purple-50flex items-center justify-center" onClick={isListening ? stopRecording : null}>
-
-      {/* Voice input button */}
-      <div className="p-6 flex items-center justify-center cursor-pointer">
-
-
-        <div className="relative">
-          {/* AI Speaking Animation - Circular waves with blue color */}
-          {isAiSpeaking && (
-            <>
-              <div className="absolute inset-0 rounded-full animate-ping" style={{
-                background: "radial-gradient(circle, rgba(99,102,241,0.7) 0%, rgba(99,102,241,0) 70%)",
-                animation: "ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite",
-                animationDelay: "0s"
-              }}></div>
-              <div className="absolute inset-0 rounded-full" style={{
-                background: "radial-gradient(circle, rgba(79,70,229,0.5) 0%, rgba(79,70,229,0) 70%)",
-                animation: "ping 1.8s cubic-bezier(0, 0, 0.2, 1) infinite",
-                animationDelay: "0.3s"
-              }}></div>
-              <div className="absolute inset-0 rounded-full" style={{
-                background: "radial-gradient(circle, rgba(67,56,202,0.3) 0%, rgba(67,56,202,0) 70%)",
-                animation: "ping 2.1s cubic-bezier(0, 0, 0.2, 1) infinite",
-                animationDelay: "0.6s"
-              }}></div>
-            </>
-          )}
-
-          {/* User Speaking Animation - Sound waves with purple color */}
-          {isListening && (
-            <>
-              <div className="absolute inset-0 rounded-full animate-pulse" style={{
-                boxShadow: "0 0 0 20px rgba(139,92,246,0.1), 0 0 0 40px rgba(139,92,246,0.05)"
-              }}></div>
-              <div className="absolute -inset-4 flex items-center justify-center">
-                <svg viewBox="0 0 100 100" className="w-full h-full absolute">
-                  {[...Array(4)].map((_, i) => (
-                    <circle
-                      key={i}
-                      cx="50"
-                      cy="50"
-                      r={20 + i * 10}
-                      strokeWidth="2"
-                      stroke={`rgba(147,51,234,${0.7 - i * 0.15})`}
-                      fill="none"
-                      strokeDasharray="1, 8"
-                      style={{
-                        animation: `spin ${2 + i * 0.5}s linear infinite`,
-                        transformOrigin: 'center',
-                        animationDirection: i % 2 === 0 ? 'normal' : 'reverse'
-                      }}
-                    />
-                  ))}
-                </svg>
-              </div>
-            </>
-          )}
-
-          {/* Processing Animation - Rotating dashed circle with orange/yellow gradient */}
-          {isProcessing && (
-            <>
-              <div className="absolute inset-0 rounded-full" style={{
-                background: "radial-gradient(circle, rgba(251,191,36,0.2) 0%, rgba(251,191,36,0) 70%)"
-              }}></div>
-              <div className="absolute -inset-2 flex items-center justify-center">
-                <svg viewBox="0 0 100 100" className="w-full h-full absolute animate-spin" style={{ animationDuration: '3s' }}>
-                  <defs>
-                    <linearGradient id="processingGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-                      <stop offset="0%" stopColor="#F59E0B" />
-                      <stop offset="100%" stopColor="#D97706" />
-                    </linearGradient>
-                  </defs>
-                  <circle
-                    cx="50"
-                    cy="50"
-                    r="40"
-                    strokeWidth="4"
-                    stroke="url(#processingGradient)"
-                    fill="none"
-                    strokeDasharray="20, 10"
-                  />
-                </svg>
-              </div>
-            </>
-          )}
-
-          {/* Main button */}
-          <Button
-            onClick={toggleListening}
-            disabled={isAiSpeaking || isProcessing}
-            className={`size-52 rounded-full shadow-lg transition-all duration-300 cursor-pointer ${isListening
-              ? "bg-gradient-to-r from-purple-600 to-fuchsia-500 shadow-purple-300/40"
-              : isAiSpeaking
-                ? "bg-gradient-to-r from-indigo-500 to-blue-500 shadow-indigo-300/40"
-                : "bg-gradient-to-r from-blue-600 to-violet-600 hover:from-blue-700 hover:to-violet-700"
-              }`}
-          >
-            {isListening ? (
-              <MicOff style={{ width: 36, height: 36 }} />
-            ) : isProcessing ? (
-              <Loader style={{ width: 36, height: 36 }} />
-            ) : (
-              <Mic style={{ width: 36, height: 36 }} />
-            )}
-          </Button>
-        </div>
+    <div
+      className="h-full w-full flex flex-col bg-gradient-to-br from-blue-50 to-purple-50 items-center justify-center"
+      onClick={stopAndSend}
+      style={{
+        cursor: isListening ? "pointer" : "default"
+      }}
+    >
+      <div className="p-6 flex items-center justify-center">
+        {renderVoiceButton()}
       </div>
+      {isProcessing && (
+        <div className="mt-4">
+          <Loader className="h-6 w-6 animate-spin text-gray-500" />
+        </div>
+      )}
+      {transcript && (
+        <div className="mt-4 text-center text-gray-600">
+          <p>Transcript: {transcript}</p>
+        </div>
+      )}
+      {aiText && (
+        <div className="mt-4 text-center text-blue-700 font-semibold">
+          <p>AI: {aiText}</p>
+        </div>
+      )}
     </div>
   );
 };
