@@ -185,7 +185,7 @@
 
 - [ ] Add support for more document types
 - [ ] Improve UI/UX
-- [ ] Improve performance
+- ✅ Improve performance
 - [ ] Implement document search functionality
 - [ ] Add multi-language support
 
