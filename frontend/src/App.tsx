@@ -4,7 +4,7 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { AppProviders } from "@/providers/AppProviders";
 import FileUpload from "@/pages/FileUpload";
-import VoiceChat from "@/pages/VoiceChat";
+import VoiceChatWrapper from "@/pages/VoiceChatWrapper";
 import NotFound from "@/pages/NotFound";
 import "@/App.css";
 
@@ -17,7 +17,7 @@ const App = () => (
         <Routes>
           <Route path="/" element={<AppLayout />}>
             <Route index element={<FileUpload />} />
-            <Route path="voice-chat" element={<VoiceChat />} />
+            <Route path="voice-chat" element={<VoiceChatWrapper />} />
             <Route path="*" element={<NotFound />} />
           </Route>
         </Routes>

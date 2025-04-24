@@ -1,8 +1,9 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Mic, MicOff, Loader } from "lucide-react";
 import axios from 'axios';
 import { getOrCreateChatId } from "@/services/session";
-import TTS from 'text-to-speech-offline'
+import { useFlow, useFlowEventListener } from "@speechmatics/flow-client-react";
+import { createSpeechmaticsJWT } from '@speechmatics/auth';
 
 const VoiceChat = () => {
   const chatId = getOrCreateChatId();
@@ -10,99 +11,219 @@ const VoiceChat = () => {
   const [isAiSpeaking, setIsAiSpeaking] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [transcript, setTranscript] = useState('');
-  const transcriptRef = useRef('');
+  const [fullTranscript, setFullTranscript] = useState('');
   const [aiText, setAiText] = useState('');
-  const recognitionRef = useRef<any>(null);
+  const transcriptRef = useRef('');
+  const fullTranscriptRef = useRef('');
   const silenceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  const startListening = () => {
-    const SpeechRecognition =
-      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      alert('Your browser does not support Speech Recognition.');
+  // Add persistent session state
+  const [isSessionActive, setIsSessionActive] = useState(false);
+  const sessionActiveRef = useRef(false);
+
+  // Helper to fetch Speechmatics JWT from backend
+  const getSpeechmaticsJwt = async () => {
+    const jwt = await createSpeechmaticsJWT({
+      type: 'flow',
+      apiKey: import.meta.env.VITE_SPEECHMATICS_API_KEY,
+      ttl: 1500
+    });
+    return jwt;
+  };
+
+  // Correct Flow SDK usage
+  const { startConversation, endConversation, sendAudio, socketState } = useFlow();
+  const template_id = import.meta.env.VITE_SPEECHMATICS_TEMPLATE_ID || undefined;
+
+  // Modified: Start Speechmatics session only once
+  const startSessionIfNeeded = async () => {
+    if (!isSessionActive && !sessionActiveRef.current) {
+      try {
+        const jwt = await getSpeechmaticsJwt();
+        await startConversation(jwt, { config: { template_id, template_variables: {} } });
+        setIsSessionActive(true);
+        sessionActiveRef.current = true;
+        console.log("Speechmatics conversation started and session is active.");
+      } catch (err) {
+        console.error("Error starting Speechmatics conversation:", err);
+        setIsSessionActive(false);
+        sessionActiveRef.current = false;
+      }
+    }
+  };
+
+  // Audio recording refs
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
+
+  // Utility: Resample Float32Array to 16kHz Int16 PCM
+  const resampleTo16k = async (inputBuffer: Float32Array, inputSampleRate: number): Promise<Int16Array> => {
+    if (inputSampleRate === 16000) {
+      // Just convert to Int16
+      const pcm16 = new Int16Array(inputBuffer.length);
+      for (let i = 0; i < inputBuffer.length; i++) {
+        let s = Math.max(-1, Math.min(1, inputBuffer[i]));
+        pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+      }
+      return pcm16;
+    }
+    // Resample using OfflineAudioContext
+    const offlineCtx = new OfflineAudioContext(1, Math.ceil(inputBuffer.length * 16000 / inputSampleRate), 16000);
+    const buffer = offlineCtx.createBuffer(1, inputBuffer.length, inputSampleRate);
+    buffer.copyToChannel(inputBuffer, 0);
+    const source = offlineCtx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(offlineCtx.destination);
+    source.start();
+    const renderedBuffer = await offlineCtx.startRendering();
+    const channelData = renderedBuffer.getChannelData(0);
+    const pcm16 = new Int16Array(channelData.length);
+    for (let i = 0; i < channelData.length; i++) {
+      let s = Math.max(-1, Math.min(1, channelData[i]));
+      pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+    }
+    return pcm16;
+  };
+
+  // Start microphone and send audio to Speechmatics
+  const startMic = async () => {
+    audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
+    mediaStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const source = audioContextRef.current.createMediaStreamSource(mediaStreamRef.current);
+    scriptProcessorRef.current = audioContextRef.current.createScriptProcessor(4096, 1, 1);
+    source.connect(scriptProcessorRef.current);
+    scriptProcessorRef.current.connect(audioContextRef.current.destination);
+
+    scriptProcessorRef.current.onaudioprocess = async (audioProcessingEvent) => {
+      const inputBuffer = audioProcessingEvent.inputBuffer;
+      const inputData = inputBuffer.getChannelData(0);
+      const inputSampleRate = audioContextRef.current?.sampleRate || 44100;
+      const pcm16 = await resampleTo16k(inputData, inputSampleRate);
+      sendAudio(pcm16.buffer);
+    };
+  };
+
+  // Stop microphone
+  const stopMic = () => {
+    scriptProcessorRef.current?.disconnect();
+    audioContextRef.current?.close();
+    mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+  };
+
+  // Listen for transcript and partial transcript messages using the event listener hook
+  useFlowEventListener("message", ({ data }) => {
+    console.log("Speechmatics message:", data);
+    // Handle AddPartialTranscript (interim results)
+    if (data.message === "AddPartialTranscript") {
+      const partial = data.metadata?.transcript;
+      if (typeof partial === 'string') {
+        setTranscript(fullTranscriptRef.current + partial);
+        transcriptRef.current = fullTranscriptRef.current + partial;
+        // Reset silence timer on every partial transcript
+        if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
+        silenceTimeoutRef.current = setTimeout(() => {
+          handleSilence();
+        }, 2500);
+      }
+    }
+    // Handle AddTranscript (final results)
+    if (data.message === "AddTranscript") {
+      const finalTranscript = data.metadata?.transcript;
+      if (typeof finalTranscript === 'string') {
+        setFullTranscript(prev => {
+          const updated = prev + finalTranscript + ' ';
+          fullTranscriptRef.current = updated;
+          return updated;
+        });
+        setTranscript(fullTranscriptRef.current);
+        transcriptRef.current = fullTranscriptRef.current;
+        console.log("Final transcript:", finalTranscript);
+        // Reset silence timer on every final transcript
+        if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
+        silenceTimeoutRef.current = setTimeout(() => {
+          handleSilence();
+        }, 2500);
+      } else {
+        // Print all keys for debugging
+        console.log("Transcript not found in AddTranscript message. Message keys:", Object.keys(data));
+      }
+    }
+  });
+
+  // Silence detection and transcript update
+  useEffect(() => {
+    if (!isListening) return;
+    if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
+    return () => {
+      if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isListening]);
+
+  // Start listening/transcribing (just start mic)
+  const startListening = async () => {
+    if (!template_id) {
+      alert('Speechmatics template_id is required. Please set VITE_SPEECHMATICS_TEMPLATE_ID in your environment.');
       return;
     }
-    const recognition = new SpeechRecognition();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = 'en-US';
-    recognitionRef.current = recognition;
     setTranscript('');
-
-    // Helper to stop recognition after silence
-    const stopAfterSilence = () => {
-      if (recognitionRef.current) recognitionRef.current.stop();
-      setIsListening(false);
-      sendTextToBackend(transcriptRef.current);
-    };
-
-    const resetSilenceTimer = () => {
-      if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
-      silenceTimeoutRef.current = setTimeout(() => {
-        stopAfterSilence();
-      }, 2000); // 2 seconds
-    };
-
-    recognition.onresult = (event: any) => {
-      let interim = '';
-      let final = '';
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const transcriptPiece = event.results[i][0].transcript;
-        if (event.results[i].isFinal) {
-          final += transcriptPiece;
-        } else {
-          interim += transcriptPiece;
-        }
-      }
-      // Always use the latest transcript (not append)
-      const latest = final || interim;
-      setTranscript(latest);
-      transcriptRef.current = latest;
-      // Reset silence timer on every result
-      resetSilenceTimer();
-    };
-    recognition.onerror = (event: any) => {
-      setIsListening(false);
-      setTranscript('');
-      if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
-      console.error('Speech recognition error:', event.error);
-    };
-    recognition.onend = () => {
-      // If still listening, restart recognition (workaround for Chrome's auto-end)
-      if (isListening) {
-        recognition.start();
-      } else {
-        if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
-      }
-    };
-    recognition.start();
+    transcriptRef.current = '';
+    setFullTranscript('');
+    fullTranscriptRef.current = '';
     setIsListening(true);
-    // Start initial silence timer in case no speech is detected at all
-    resetSilenceTimer();
+    await startSessionIfNeeded(); // Start session if not already active
+    await startMic();
+    console.log("Mic started. Ready for speech.");
   };
 
-  const stopListening = () => {
-    if (recognitionRef.current) {
-      recognitionRef.current.stop();
-      setIsListening(false);
-    }
+  // Stop listening/transcribing (just stop mic, do not end conversation)
+  const stopListening = async () => {
+    setIsListening(false);
+    setIsProcessing(true);
+    stopMic();
     if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
+    if (fullTranscriptRef.current.trim()) {
+      console.log("Sending transcript to backend:", fullTranscriptRef.current.trim());
+      await sendTextToBackend(fullTranscriptRef.current.trim());
+    }
   };
 
+  // Handle detected silence: stop mic, send transcript
+  const handleSilence = async () => {
+    if (!isListening) return;
+    setIsListening(false);
+    setIsProcessing(true);
+    stopMic();
+    if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
+    if (fullTranscriptRef.current.trim()) {
+      console.log("Sending transcript to backend:", fullTranscriptRef.current.trim());
+      await sendTextToBackend(fullTranscriptRef.current.trim());
+    }
+  };
+
+  // Send transcript to backend, play response with backend-generated audio
   const sendTextToBackend = async (text: string) => {
     try {
       setIsProcessing(true);
       setAiText('');
+      // Request backend to process chat and return both audio (base64) and text
       const response = await axios.post(
         `${import.meta.env.VITE_API_BASE_URL}/chat/${chatId}`,
         { text, chatId }
       );
       setIsProcessing(false);
-      setAiText(response.data.text || '');
       setIsAiSpeaking(true);
-      // Use the TTS library to speak the AI's text
-      if (response.data.text) {
-        TTS(response.data.text, 'en-US');
+      // Set AI text
+      setAiText(response.data.text || '');
+      // Play audio from base64
+      if (response.data.audio) {
+        const audioBuffer = Uint8Array.from(atob(response.data.audio), c => c.charCodeAt(0));
+        const audioBlob = new Blob([audioBuffer], { type: 'audio/mpeg' });
+        const audioUrl = URL.createObjectURL(audioBlob);
+        const audio = new Audio(audioUrl);
+        await audio.play();
+        audio.onended = () => URL.revokeObjectURL(audioUrl);
       }
       setIsAiSpeaking(false);
     } catch (error) {
@@ -113,20 +234,36 @@ const VoiceChat = () => {
     }
   };
 
-  // Helper to stop and send transcript immediately (e.g., on user click)
-  const stopAndSend = () => {
+  // Stop and send transcript immediately (on user click)
+  const stopAndSend = async () => {
     if (isListening) {
-      if (recognitionRef.current) recognitionRef.current.stop();
       setIsListening(false);
+      setIsProcessing(true);
+      stopMic();
       if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
-      sendTextToBackend(transcriptRef.current);
+      if (fullTranscriptRef.current.trim()) {
+        console.log("Sending transcript to backend:", fullTranscriptRef.current.trim());
+        await sendTextToBackend(fullTranscriptRef.current.trim());
+      }
     }
   };
 
-  // Custom animated button (old design)
+  // End session only when user leaves or explicitly ends
+  useEffect(() => {
+    return () => {
+      if (sessionActiveRef.current) {
+        endConversation();
+        setIsSessionActive(false);
+        sessionActiveRef.current = false;
+        console.log("Speechmatics conversation ended on component unmount.");
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Voice button rendering remains unchanged
   const renderVoiceButton = () => (
     <div className="relative flex items-center justify-center">
-      {/* AI Speaking Animation - Circular waves with blue color */}
       {isAiSpeaking && (
         <>
           <div className="absolute inset-0 rounded-full animate-ping" style={{
@@ -146,7 +283,6 @@ const VoiceChat = () => {
           }}></div>
         </>
       )}
-      {/* User Speaking Animation - Sound waves with purple color */}
       {isListening && (
         <>
           <div className="absolute inset-0 rounded-full animate-pulse" style={{
@@ -175,7 +311,6 @@ const VoiceChat = () => {
           </div>
         </>
       )}
-      {/* Main button */}
       <button
         onClick={isListening ? stopListening : startListening}
         disabled={isAiSpeaking || isProcessing}
