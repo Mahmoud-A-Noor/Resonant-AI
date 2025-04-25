@@ -6,7 +6,6 @@ import { useFlow, useFlowEventListener } from "@speechmatics/flow-client-react";
 import { createSpeechmaticsJWT } from '@speechmatics/auth';
 
 const VoiceChat = () => {
-  // TODO: button can be clicked even tho ai is speaking
   // TODO: silence detection is not working
   const chatId = getOrCreateChatId();
   const [isListening, setIsListening] = useState(false);
@@ -17,11 +16,25 @@ const VoiceChat = () => {
   const [aiText, setAiText] = useState('');
   const transcriptRef = useRef('');
   const fullTranscriptRef = useRef('');
-  const silenceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
 
   // Add persistent session state
   const [isSessionActive, setIsSessionActive] = useState(false);
   const sessionActiveRef = useRef(false);
+
+  // Silence detection: track consecutive empty transcript events and their start time
+  const emptyTranscriptEventCountRef = useRef(0);
+  const emptyTranscriptStartTimeRef = useRef<number | null>(null);
+
+  // Cleanup silence detection refs on unmount
+  useEffect(() => {
+    return () => {
+      emptyTranscriptEventCountRef.current = 0;
+      emptyTranscriptStartTimeRef.current = null;
+    };
+  }, []);
 
   // Helper to fetch Speechmatics JWT from backend
   const getSpeechmaticsJwt = async () => {
@@ -53,11 +66,6 @@ const VoiceChat = () => {
       }
     }
   };
-
-  // Audio recording refs
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const mediaStreamRef = useRef<MediaStream | null>(null);
-  const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
 
   // Utility: Resample Float32Array to 16kHz Int16 PCM
   const resampleTo16k = async (inputBuffer: Float32Array, inputSampleRate: number): Promise<Int16Array> => {
@@ -100,6 +108,7 @@ const VoiceChat = () => {
     scriptProcessorRef.current.onaudioprocess = async (audioProcessingEvent) => {
       const inputBuffer = audioProcessingEvent.inputBuffer;
       const inputData = inputBuffer.getChannelData(0);
+      // Only: send audio to backend
       const inputSampleRate = audioContextRef.current?.sampleRate || 44100;
       const pcm16 = await resampleTo16k(inputData, inputSampleRate);
       sendAudio(pcm16.buffer);
@@ -115,50 +124,64 @@ const VoiceChat = () => {
 
   // Listen for transcript and partial transcript messages using the event listener hook
   useFlowEventListener("message", ({ data }) => {
-    console.log("Speechmatics message:", data);
     // Handle AddPartialTranscript (interim results)
-    if (data.message === "AddPartialTranscript") {
-      const partial = data.metadata?.transcript;
-      if (typeof partial === 'string') {
-        setTranscript(fullTranscriptRef.current + partial);
-        transcriptRef.current = fullTranscriptRef.current + partial;
-        // Reset silence timer on every partial transcript
-        if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
-        silenceTimeoutRef.current = setTimeout(() => {
-          handleSilence();
-        }, 2500);
+    if (data.message === "AddPartialTranscript" || data.message === "AddTranscript") {
+      const transcript = data.metadata?.transcript;
+      // If transcript is non-empty: reset counter and timestamp
+      if (typeof transcript === 'string' && transcript.trim() !== '') {
+        emptyTranscriptEventCountRef.current = 0;
+        emptyTranscriptStartTimeRef.current = null;
+      } else {
+        // transcript is empty string: update counter and timestamp
+        const now = Date.now();
+        if (emptyTranscriptEventCountRef.current === 0) {
+          emptyTranscriptStartTimeRef.current = now;
+        }
+        emptyTranscriptEventCountRef.current += 1;
+        if (
+          emptyTranscriptStartTimeRef.current !== null &&
+          now - emptyTranscriptStartTimeRef.current > 1500 &&
+          transcriptRef.current.trim() !== '' && isListening
+        ) {
+          emptyTranscriptEventCountRef.current = 0;
+          emptyTranscriptStartTimeRef.current = null;
+          stopListening(); // Trigger processing
+        }
       }
-    }
-    // Handle AddTranscript (final results)
-    if (data.message === "AddTranscript") {
-      const finalTranscript = data.metadata?.transcript;
-      if (typeof finalTranscript === 'string') {
-        setFullTranscript(prev => {
-          const updated = prev + finalTranscript + ' ';
-          fullTranscriptRef.current = updated;
-          return updated;
-        });
-        setTranscript(fullTranscriptRef.current);
-        transcriptRef.current = fullTranscriptRef.current;
-        console.log("Final transcript:", finalTranscript);
-        // Reset silence timer on every final transcript
-        if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
-        silenceTimeoutRef.current = setTimeout(() => {
-          handleSilence();
-        }, 2500);
+      // Handle AddPartialTranscript (interim results)
+      if (data.message === "AddPartialTranscript") {
+        const partial = data.metadata?.transcript;
+        if (typeof partial === 'string') {
+          setTranscript(fullTranscriptRef.current + partial);
+          transcriptRef.current = fullTranscriptRef.current + partial;
+        }
+      }
+      // Handle AddTranscript (final results)
+      if (data.message === "AddTranscript") {
+        const finalTranscript = data.metadata?.transcript;
+        if (typeof finalTranscript === 'string') {
+          setFullTranscript(prev => {
+            const updated = prev + finalTranscript + ' ';
+            fullTranscriptRef.current = updated;
+            return updated;
+          });
+          setTranscript(fullTranscriptRef.current);
+          transcriptRef.current = fullTranscriptRef.current;
+          console.log("Final transcript:", finalTranscript);
+        }
       }
     }
   });
 
-  // Silence detection and transcript update
+  // Cleanup silence timer on stop
   useEffect(() => {
-    if (!isListening) return;
-    if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
     return () => {
-      if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
+      if (emptyTranscriptStartTimeRef.current !== null) {
+        emptyTranscriptEventCountRef.current = 0;
+        emptyTranscriptStartTimeRef.current = null;
+      }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isListening]);
+  }, []);
 
   // Start listening/transcribing (just start mic)
   const startListening = async () => {
@@ -181,20 +204,6 @@ const VoiceChat = () => {
     setIsListening(false);
     setIsProcessing(true);
     stopMic();
-    if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
-    if (fullTranscriptRef.current.trim()) {
-      console.log("Sending transcript to backend:", fullTranscriptRef.current.trim());
-      await sendTextToBackend(fullTranscriptRef.current.trim());
-    }
-  };
-
-  // Handle detected silence: stop mic, send transcript
-  const handleSilence = async () => {
-    if (!isListening) return;
-    setIsListening(false);
-    setIsProcessing(true);
-    stopMic();
-    if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
     if (fullTranscriptRef.current.trim()) {
       console.log("Sending transcript to backend:", fullTranscriptRef.current.trim());
       await sendTextToBackend(fullTranscriptRef.current.trim());
@@ -245,7 +254,6 @@ const VoiceChat = () => {
       setIsListening(false);
       setIsProcessing(true);
       stopMic();
-      if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
       if (fullTranscriptRef.current.trim()) {
         console.log("Sending transcript to backend:", fullTranscriptRef.current.trim());
         await sendTextToBackend(fullTranscriptRef.current.trim());
