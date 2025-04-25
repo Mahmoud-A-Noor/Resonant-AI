@@ -6,7 +6,6 @@ import { useFlow, useFlowEventListener } from "@speechmatics/flow-client-react";
 import { createSpeechmaticsJWT } from '@speechmatics/auth';
 
 const VoiceChat = () => {
-  // TODO: silence detection is not working
   const chatId = getOrCreateChatId();
   const [isListening, setIsListening] = useState(false);
   const [isAiSpeaking, setIsAiSpeaking] = useState(false);
@@ -20,9 +19,10 @@ const VoiceChat = () => {
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
 
-  // Add persistent session state
   const [isSessionActive, setIsSessionActive] = useState(false);
   const sessionActiveRef = useRef(false);
+
+  const SILENCE_DETECTION_MS = 1000;
 
   // Silence detection: track consecutive empty transcript events and their start time
   const emptyTranscriptEventCountRef = useRef(0);
@@ -46,7 +46,6 @@ const VoiceChat = () => {
     return jwt;
   };
 
-  // Correct Flow SDK usage
   const { startConversation, endConversation, sendAudio, socketState } = useFlow();
   const template_id = import.meta.env.VITE_SPEECHMATICS_TEMPLATE_ID || undefined;
 
@@ -108,31 +107,27 @@ const VoiceChat = () => {
     scriptProcessorRef.current.onaudioprocess = async (audioProcessingEvent) => {
       const inputBuffer = audioProcessingEvent.inputBuffer;
       const inputData = inputBuffer.getChannelData(0);
-      // Only: send audio to backend
       const inputSampleRate = audioContextRef.current?.sampleRate || 44100;
       const pcm16 = await resampleTo16k(inputData, inputSampleRate);
       sendAudio(pcm16.buffer);
     };
   };
 
-  // Stop microphone
   const stopMic = () => {
     scriptProcessorRef.current?.disconnect();
     audioContextRef.current?.close();
     mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
   };
 
-  // Listen for transcript and partial transcript messages using the event listener hook
   useFlowEventListener("message", ({ data }) => {
-    // Handle AddPartialTranscript (interim results)
     if (data.message === "AddPartialTranscript" || data.message === "AddTranscript") {
       const transcript = data.metadata?.transcript;
-      // If transcript is non-empty: reset counter and timestamp
+      // reset silence detection if transcript is not empty
       if (typeof transcript === 'string' && transcript.trim() !== '') {
         emptyTranscriptEventCountRef.current = 0;
         emptyTranscriptStartTimeRef.current = null;
       } else {
-        // transcript is empty string: update counter and timestamp
+        // count consecutive empty transcript events and track when they started
         const now = Date.now();
         if (emptyTranscriptEventCountRef.current === 0) {
           emptyTranscriptStartTimeRef.current = now;
@@ -140,15 +135,14 @@ const VoiceChat = () => {
         emptyTranscriptEventCountRef.current += 1;
         if (
           emptyTranscriptStartTimeRef.current !== null &&
-          now - emptyTranscriptStartTimeRef.current > 1500 &&
+          now - emptyTranscriptStartTimeRef.current > SILENCE_DETECTION_MS &&
           transcriptRef.current.trim() !== '' && isListening
         ) {
           emptyTranscriptEventCountRef.current = 0;
           emptyTranscriptStartTimeRef.current = null;
-          stopListening(); // Trigger processing
+          stopListening();
         }
       }
-      // Handle AddPartialTranscript (interim results)
       if (data.message === "AddPartialTranscript") {
         const partial = data.metadata?.transcript;
         if (typeof partial === 'string') {
@@ -173,7 +167,6 @@ const VoiceChat = () => {
     }
   });
 
-  // Cleanup silence timer on stop
   useEffect(() => {
     return () => {
       if (emptyTranscriptStartTimeRef.current !== null) {
@@ -194,7 +187,7 @@ const VoiceChat = () => {
     setFullTranscript('');
     fullTranscriptRef.current = '';
     setIsListening(true);
-    await startSessionIfNeeded(); // Start session if not already active
+    await startSessionIfNeeded();
     await startMic();
     console.log("Mic started. Ready for speech.");
   };
@@ -210,7 +203,6 @@ const VoiceChat = () => {
     }
   };
 
-  // Send transcript to backend, play response with backend-generated audio
   const sendTextToBackend = async (text: string) => {
     try {
       setIsProcessing(true);
@@ -222,8 +214,6 @@ const VoiceChat = () => {
       );
       setIsProcessing(false);
       setIsAiSpeaking(true);
-      console.log(isAiSpeaking)
-      // Set AI text
       setAiText(response.data.text || '');
       // Play audio from base64
       if (response.data.audio) {
@@ -248,7 +238,6 @@ const VoiceChat = () => {
     }
   };
 
-  // Stop and send transcript immediately (on user click)
   const stopAndSend = async () => {
     if (isListening) {
       setIsListening(false);
@@ -261,7 +250,6 @@ const VoiceChat = () => {
     }
   };
 
-  // End session only when user leaves or explicitly ends
   useEffect(() => {
     return () => {
       if (sessionActiveRef.current) {
@@ -271,10 +259,8 @@ const VoiceChat = () => {
         console.log("Speechmatics conversation ended on component unmount.");
       }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Voice button rendering remains unchanged
   const renderVoiceButton = () => (
     <div className="relative flex items-center justify-center">
       {isAiSpeaking && (
