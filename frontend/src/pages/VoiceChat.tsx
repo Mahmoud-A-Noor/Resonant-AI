@@ -6,6 +6,8 @@ import { useFlow, useFlowEventListener } from "@speechmatics/flow-client-react";
 import { createSpeechmaticsJWT } from '@speechmatics/auth';
 
 const VoiceChat = () => {
+  // TODO: button can be clicked even tho ai is speaking
+  // TODO: silence detection is not working
   const chatId = getOrCreateChatId();
   const [isListening, setIsListening] = useState(false);
   const [isAiSpeaking, setIsAiSpeaking] = useState(false);
@@ -144,9 +146,6 @@ const VoiceChat = () => {
         silenceTimeoutRef.current = setTimeout(() => {
           handleSilence();
         }, 2500);
-      } else {
-        // Print all keys for debugging
-        console.log("Transcript not found in AddTranscript message. Message keys:", Object.keys(data));
       }
     }
   });
@@ -214,6 +213,7 @@ const VoiceChat = () => {
       );
       setIsProcessing(false);
       setIsAiSpeaking(true);
+      console.log(isAiSpeaking)
       // Set AI text
       setAiText(response.data.text || '');
       // Play audio from base64
@@ -222,10 +222,15 @@ const VoiceChat = () => {
         const audioBlob = new Blob([audioBuffer], { type: 'audio/mpeg' });
         const audioUrl = URL.createObjectURL(audioBlob);
         const audio = new Audio(audioUrl);
+        audio.onended = () => {
+          URL.revokeObjectURL(audioUrl);
+          setIsAiSpeaking(false);
+          console.log('AI done speaking');
+        };
         await audio.play();
-        audio.onended = () => URL.revokeObjectURL(audioUrl);
+      } else {
+        setIsAiSpeaking(false);
       }
-      setIsAiSpeaking(false);
     } catch (error) {
       setIsProcessing(false);
       setIsAiSpeaking(false);
