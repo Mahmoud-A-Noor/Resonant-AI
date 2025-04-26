@@ -4,6 +4,11 @@ import axios from 'axios';
 import { getOrCreateChatId } from "@/services/session";
 import { useFlow, useFlowEventListener } from "@speechmatics/flow-client-react";
 import { createSpeechmaticsJWT } from '@speechmatics/auth';
+import { ElevenLabsClient, stream, play } from 'elevenlabs';
+
+const elevenLabsClient = new ElevenLabsClient({
+  apiKey: import.meta.env.VITE_ELEVENLABS_API_KEY
+});
 
 const VoiceChat = () => {
   const chatId = getOrCreateChatId();
@@ -203,33 +208,46 @@ const VoiceChat = () => {
     }
   };
 
+  // Replace sendTextToBackend to use ElevenLabs on frontend
   const sendTextToBackend = async (text: string) => {
     try {
       setIsProcessing(true);
       setAiText('');
-      // Request backend to process chat and return both audio (base64) and text
+      // Request backend to process chat and return ONLY text
       const response = await axios.post(
         `${import.meta.env.VITE_API_BASE_URL}/chat/${chatId}`,
         { text, chatId }
       );
+
+      const audioStream = await elevenLabsClient.textToSpeech.convertAsStream('EXAVITQu4vr4xnSDxMaL', {
+        text: response.data.text,
+        model_id: "eleven_multilingual_v2",
+      });
+
       setIsProcessing(false);
       setIsAiSpeaking(true);
       setAiText(response.data.text || '');
-      // Play audio from base64
-      if (response.data.audio) {
-        const audioBuffer = Uint8Array.from(atob(response.data.audio), c => c.charCodeAt(0));
-        const audioBlob = new Blob([audioBuffer], { type: 'audio/mpeg' });
-        const audioUrl = URL.createObjectURL(audioBlob);
-        const audio = new Audio(audioUrl);
-        audio.onended = () => {
-          URL.revokeObjectURL(audioUrl);
-          setIsAiSpeaking(false);
-          console.log('AI done speaking');
-        };
-        await audio.play();
-      } else {
+
+      const audio = new Audio();
+      const mediaSource = new MediaSource();
+      audio.src = URL.createObjectURL(mediaSource);
+      audio.play();
+      
+      mediaSource.addEventListener('sourceopen', async () => {
+        const sourceBuffer = mediaSource.addSourceBuffer('audio/mpeg');
+        for await (const chunk of audioStream) {
+          // Ensure chunk is Uint8Array
+          const buffer = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
+          sourceBuffer.appendBuffer(buffer);
+          // Wait for buffer to be ready for next chunk
+          await new Promise(resolve => sourceBuffer.addEventListener('updateend', resolve, { once: true }));
+        }
+        mediaSource.endOfStream();
+      });
+
+      audio.addEventListener('ended', () => {
         setIsAiSpeaking(false);
-      }
+      });
     } catch (error) {
       setIsProcessing(false);
       setIsAiSpeaking(false);
